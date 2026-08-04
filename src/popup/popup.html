@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="../ui/common.css">
+  <link rel="stylesheet" href="popup.css">
+  <title>Proxymate</title>
+</head>
+<body>
+  <div id="app">
+    <div class="head row spread">
+      <strong>Proxymate</strong>
+      <span id="status" class="badge">…</span>
+    </div>
+
+    <div id="warn"></div>
+
+    <div class="card" id="info">
+      <div class="row spread" style="margin-bottom:5px">
+        <h2 style="margin:0" id="info-title">Текущий выход</h2>
+        <button class="sm" id="recheck">Проверить</button>
+      </div>
+      <table>
+        <tr>
+          <th>IP</th>
+          <td class="row" style="gap:6px">
+            <span id="v-ip" class="mono grow ellipsis">—</span>
+            <button class="link" id="copy-ip" hidden>копировать</button>
+          </td>
+        </tr>
+        <tr><th>Страна</th><td id="v-country">—</td></tr>
+        <tr><th>Часовой пояс</th><td id="v-tz" class="mono">—</td></tr>
+        <tr><th>Языки</th><td id="v-lang" class="mono">—</td></tr>
+      </table>
+      <div id="info-note" class="muted note-sm"></div>
+    </div>
+
+    <div class="card" id="site-card" hidden>
+      <h2>Текущий сайт</h2>
+      <div class="row">
+        <span id="site-host" class="mono grow ellipsis">—</span>
+        <button class="sm" id="site-bypass">В обход</button>
+      </div>
+      <div id="site-note" class="muted note-sm"></div>
+    </div>
+
+    <div class="card">
+      <div class="row spread" style="margin-bottom:6px">
+        <h2 style="margin:0">Профили</h2>
+        <span class="muted note-sm" style="margin:0">клик — вкл/выкл</span>
+      </div>
+      <input type="text" id="filter" placeholder="фильтр по названию или стране" hidden>
+      <div id="list"></div>
+    </div>
+
+    <div class="btn-grid">
+      <button id="disconnect">Отключить</button>
+      <button id="leak">Утечки</button>
+      <button id="options">Настройки</button>
+    </div>
+  </div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

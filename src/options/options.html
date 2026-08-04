@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="../ui/common.css">
+  <title>Proxymate — настройки</title>
+  <style>
+    body { padding: 0 0 40px; }
+
+    .topbar {
+      position: sticky; top: 0; z-index: 5;
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      padding: 12px 20px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    .topbar h1 { margin: 0; }
+    .topbar .sep { flex: 1; }
+
+    .wrap {
+      max-width: 1040px; margin: 0 auto; padding: 16px 20px 0;
+      display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px;
+      align-items: start;
+    }
+    @media (max-width: 900px) { .wrap { grid-template-columns: minmax(0, 1fr); } }
+    .side { position: sticky; top: 62px; }
+
+    /* --- профили --- */
+    .plist { display: flex; flex-direction: column; gap: 6px; }
+    .prow {
+      display: flex; align-items: center; gap: 9px;
+      padding: 8px 9px; border: 1px solid var(--border); border-radius: 7px;
+    }
+    .prow.active { border-color: var(--ok); background: var(--panel-2); }
+    .prow .meta { font-size: 11px; color: var(--muted); }
+
+    /* --- секции настроек --- */
+    .sect { padding: 10px 0; border-top: 1px solid var(--border); }
+    .sect:first-of-type { border-top: 0; padding-top: 0; }
+    .sect > h3 { font-size: 12px; margin: 0 0 8px; color: var(--text); font-weight: 600; }
+
+    /* --- редактор --- */
+    dialog {
+      width: min(420px, 92vw); padding: 16px;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: var(--panel); color: var(--text);
+    }
+    dialog::backdrop { background: rgba(2, 6, 23, .65); }
+    .two { display: grid; grid-template-columns: 1fr 96px; gap: 8px; }
+    .two2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+    #msg { min-height: 18px; font-size: 12px; }
+    summary { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>Proxymate Proxy</h1>
+    <span id="top-status" class="badge">…</span>
+    <span class="muted" id="version-label" style="font-size:11px"></span>
+    <span class="sep"></span>
+    <span id="update-badge" class="badge" hidden></span>
+    <div class="btn-row">
+      <button class="sm" id="check-update">Проверить обновления</button>
+      <button id="add" class="primary">+ Профиль</button>
+      <button id="leak">Тест утечек</button>
+      <button id="backup-open">Резервная копия</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div>
+      <div id="msg" class="muted"></div>
+
+      <div class="card">
+        <h2>Профили прокси</h2>
+        <div class="plist" id="plist"></div>
+
+        <details style="margin-top:10px">
+          <summary class="muted">Массовый импорт списка</summary>
+          <p class="muted" style="margin:8px 0">
+            По одной строке: <code>host:port</code>, <code>host:port:user:pass</code>
+            или <code>socks5://user:pass@host:port</code>
+          </p>
+          <textarea id="bulk" rows="4" placeholder="1.2.3.4:8080:user:pass"></textarea>
+          <div class="btn-row" style="margin-top:8px">
+            <button id="import">Импортировать</button>
+          </div>
+        </details>
+
+      </div>
+
+      <div class="card">
+        <h2>Общие настройки</h2>
+
+        <div class="sect">
+          <h3>Подмена отпечатка под страну прокси</h3>
+          <label class="check"><input type="checkbox" id="s-tz"><span>Часовой пояс — <code>Date</code>, <code>Intl</code></span></label>
+          <label class="check"><input type="checkbox" id="s-lang"><span>Язык страницы — <code>navigator.language(s)</code></span></label>
+          <label class="check"><input type="checkbox" id="s-al"><span>HTTP-заголовок <code>Accept-Language</code></span></label>
+          <label class="check">
+            <input type="checkbox" id="s-geo">
+            <span>Координаты — <code>navigator.geolocation</code>
+              <span class="muted">— отдаёт точку рядом с городом прокси; запрос разрешения у пользователя сохраняется</span></span>
+          </label>
+          <label class="check"><input type="checkbox" id="s-auto"><span>Определять IP и страну сразу после подключения</span></label>
+          <p class="muted" style="margin:4px 0 0">
+            Эти галочки — общий рубильник. Отключить подмену для одного профиля
+            можно в его настройках: «Подмена отпечатка» → «Не подменять ничего».
+          </p>
+        </div>
+
+        <div class="sect">
+          <h3>WebRTC</h3>
+          <label class="field">
+            <span>Политика на уровне браузера</span>
+            <select id="s-rtc">
+              <option value="disable_non_proxied_udp">Только через прокси — рекомендуется</option>
+              <option value="default_public_interface_only">Скрывать локальные IP</option>
+              <option value="default">Без ограничений</option>
+            </select>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="s-blockrtc">
+            <span>Полностью вырезать <code>RTCPeerConnection</code> на страницах
+              <span class="muted">— ломает видеозвонки</span></span>
+          </label>
+        </div>
+
+        <div class="sect">
+          <h3>Сайты в обход прокси</h3>
+          <div id="chips" class="chips"></div>
+          <div class="row" style="margin-bottom:6px">
+            <input type="text" id="bp-input" class="grow" placeholder="example.com, 192.168.0.0/16, *.corp.local">
+            <button id="bp-add">Добавить</button>
+          </div>
+          <label class="check" style="margin-bottom:6px">
+            <input type="checkbox" id="bp-subs" checked><span>вместе с поддоменами</span>
+          </label>
+          <div class="btn-row">
+            <button class="sm" id="bp-tab">+ текущая вкладка</button>
+            <button class="sm" id="bp-local">+ локальная сеть</button>
+            <button class="sm" id="bp-clear">Очистить</button>
+          </div>
+          <p class="muted" style="margin:8px 0 0">
+            Enter добавляет, ×&nbsp;удаляет. Понимает <code>example.com</code>,
+            <code>*.example.com</code>, <code>10.0.0.0/8</code>, <code>host:8080</code>,
+            <code>&lt;local&gt;</code> — имена без точек.
+          </p>
+        </div>
+
+        <div class="btn-row" style="margin-top:12px">
+          <button class="primary" id="save-settings">Сохранить настройки</button>
+          <button id="reset">Сбросить прокси</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="card">
+        <div class="row spread" style="margin-bottom:8px">
+          <h2 style="margin:0">Диагностика</h2>
+          <button class="sm" id="refresh-diag">Обновить</button>
+        </div>
+        <div id="diag" class="muted">…</div>
+        <div class="btn-row" style="margin-top:10px">
+          <button class="primary" id="test">Проверить прокси</button>
+        </div>
+        <div id="test-result" style="margin-top:8px"></div>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="backup">
+    <h2>Резервная копия</h2>
+
+    <div class="sect">
+      <h3>Экспорт</h3>
+      <label class="check">
+        <input type="checkbox" id="exp-pass" checked>
+        <span>включить пароли <span class="muted">— файл будет содержать их открытым текстом</span></span>
+      </label>
+      <div class="btn-row"><button id="export">Скачать файл</button></div>
+    </div>
+
+    <div class="sect">
+      <h3>Импорт</h3>
+      <label class="check">
+        <input type="checkbox" id="imp-replace">
+        <span>заменить всё <span class="muted">— иначе профили из файла добавятся к текущим, дубликаты пропустятся</span></span>
+      </label>
+      <div class="btn-row">
+        <button id="import-file">Выбрать файл</button>
+        <input type="file" id="imp-input" accept="application/json,.json" hidden>
+      </div>
+    </div>
+
+    <div id="backup-msg" class="muted" style="min-height:18px; margin-top:8px; font-size:12px"></div>
+    <div class="btn-row" style="margin-top:8px">
+      <button id="backup-close">Закрыть</button>
+    </div>
+  </dialog>
+
+  <dialog id="editor">
+    <h2 id="editor-title">Профиль</h2>
+    <label class="field"><span>Название</span><input type="text" id="f-name" placeholder="Германия #1"></label>
+    <div class="two">
+      <label class="field"><span>Хост</span><input type="text" id="f-host" placeholder="1.2.3.4"></label>
+      <label class="field"><span>Порт</span><input type="number" id="f-port" placeholder="8080"></label>
+    </div>
+
+    <label class="field">
+      <span>Как соединяться с самим прокси</span>
+      <select id="f-scheme">
+        <option value="http">HTTP — обычный прокси (подходит в 95% случаев)</option>
+        <option value="socks5">SOCKS5</option>
+        <option value="socks4">SOCKS4</option>
+        <option value="https">HTTPS — TLS до самого прокси (редкость)</option>
+      </select>
+    </label>
+    <p class="muted" style="margin:-4px 0 8px">
+      Это протокол разговора <em>с прокси</em>, а не список сайтов.
+      Обычный HTTP-прокси нормально обслуживает и https-сайты — через CONNECT.
+    </p>
+    <p class="notice" id="https-note" hidden>
+      HTTPS-прокси требует, чтобы сервер сам принимал TLS-соединения. Такое умеют
+      единицы: если сайты перестанут грузиться — вернитесь на HTTP.
+    </p>
+
+    <div class="two2">
+      <label class="field"><span>Логин</span><input type="text" id="f-user" autocomplete="off"></label>
+      <label class="field"><span>Пароль</span><input type="password" id="f-pass" autocomplete="off"></label>
+    </div>
+    <p class="notice" id="socks-note" hidden>
+      SOCKS с логином и паролем Chrome через API расширений не поддерживает —
+      авторизация будет проигнорирована.
+    </p>
+
+    <label class="field">
+      <span>Подмена отпечатка для этого профиля</span>
+      <select id="f-mode">
+        <option value="auto">Автоматически по IP прокси</option>
+        <option value="manual">Задать вручную</option>
+        <option value="off">Не подменять ничего</option>
+      </select>
+    </label>
+    <p class="muted" id="mode-note" style="margin:-4px 0 8px"></p>
+
+    <label class="field"><span>Часовой пояс (IANA)</span><input type="text" id="f-tz" placeholder="Europe/Berlin"></label>
+    <label class="field"><span>Языки через запятую</span><input type="text" id="f-langs" placeholder="de-DE, de, en"></label>
+    <div class="two2">
+      <label class="field"><span>Широта</span><input type="text" id="f-lat" placeholder="52.3676"></label>
+      <label class="field"><span>Долгота</span><input type="text" id="f-lon" placeholder="4.9041"></label>
+    </div>
+
+    <div class="sect" style="margin-top:4px">
+      <div class="btn-row">
+        <button id="test-profile">Проверить подключение</button>
+      </div>
+      <div id="test-profile-result" style="margin-top:8px; font-size:12px"></div>
+      <p class="muted" style="margin:6px 0 0">
+        Пробный запрос уходит через проверяемый прокси, текущее соединение при
+        этом не разрывается — остальной трафик идёт как шёл.
+      </p>
+    </div>
+
+    <div class="btn-row" style="margin-top:12px">
+      <button class="primary" id="save-profile">Сохранить</button>
+      <button id="cancel">Отмена</button>
+      <button class="danger" id="delete" style="margin-left:auto">Удалить</button>
+    </div>
+  </dialog>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

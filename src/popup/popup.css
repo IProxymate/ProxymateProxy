@@ -1,0 +1,52 @@
+body { width: 360px; }
+#app { padding: 12px; }
+.head { margin-bottom: 10px; }
+.head strong { font-size: 14px; }
+
+#info th { width: 34%; }
+#info td { font-size: 12px; }
+
+#list { max-height: 210px; overflow-y: auto; margin: 0 -4px; }
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.item:hover { background: var(--panel-2); }
+.item.active { background: var(--panel-2); outline: 1px solid var(--accent); }
+.item .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); flex: none; }
+.item.active .dot { background: var(--ok); }
+.item .meta { font-size: 11px; color: var(--muted); }
+.empty { color: var(--muted); padding: 8px 6px; }
+
+#filter { margin-bottom: 6px; font-size: 12px; padding: 4px 7px; }
+
+.note-sm { font-size: 11px; margin-top: 5px; line-height: 1.35; }
+.note-sm:empty { display: none; }
+
+button.link {
+  all: unset;
+  cursor: pointer;
+  flex: none;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: underline;
+}
+button.link:hover { opacity: .8; }
+
+/* закрываемое уведомление */
+.dismissable { display: flex; gap: 8px; align-items: flex-start; }
+.dismissable > span { flex: 1; min-width: 0; word-break: break-word; font-size: 12px; }
+.dismissable > button {
+  all: unset;
+  cursor: pointer;
+  flex: none;
+  width: 18px;
+  text-align: center;
+  opacity: .7;
+}
+.dismissable > button:hover { opacity: 1; }
