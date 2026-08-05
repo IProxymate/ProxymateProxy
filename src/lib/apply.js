@@ -30,6 +30,16 @@ function bypassDomains(bypassList) {
   return [...out];
 }
 
+/**
+ * «www.» перед доменом не несёт смысла для правил обхода: приводим к базовому
+ * хосту, иначе «bypass this site» на www.example.com не покрывает соседние
+ * поддомены вроде api.example.com, и их трафик (а с ним Accept-Language)
+ * продолжает идти через прокси, хотя сам сайт выглядит обойдённым.
+ */
+export function bypassHost(host) {
+  return String(host || '').toLowerCase().replace(/^www\./, '');
+}
+
 /** Хост подпадает под какое-либо правило обхода прокси? */
 export function isHostBypassed(host, bypassList) {
   if (!host) return false;

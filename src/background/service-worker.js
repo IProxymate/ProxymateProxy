@@ -2,7 +2,7 @@ import { getState, setState, normalizeProfile, newProfileId, DEFAULT_SETTINGS } 
 import { detectGeo, probeGeo, PROBE_HOST } from '../lib/geo.js';
 import {
   applyAll, applyProbePac, injectFallback, userScriptsAvailable,
-  setBadge, clearProxy, readDiagnostics, isHostBypassed
+  setBadge, clearProxy, readDiagnostics, isHostBypassed, bypassHost
 } from '../lib/apply.js';
 import { checkForUpdate } from '../lib/update.js';
 
@@ -589,7 +589,8 @@ const handlers = {
     if (!host) throw new Error('Не указан хост');
     const s = await getState();
     const list = s.settings.bypassList || [];
-    const both = [host, '*.' + host];
+    const d = bypassHost(host);
+    const both = [d, '*.' + d];
     const present = both.some((h) => list.includes(h));
     const bypassList = present
       ? list.filter((h) => !both.includes(h))

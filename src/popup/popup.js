@@ -1,5 +1,6 @@
 import { send, el } from '../ui/msg.js';
 import { countryLabel } from '../lib/countries.js';
+import { bypassHost } from '../lib/apply.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -151,7 +152,8 @@ async function loadInfo() {
 
 function isBypassed(host) {
   const list = state.settings.bypassList || [];
-  return list.includes(host) || list.includes('*.' + host);
+  const d = bypassHost(host);
+  return list.includes(d) || list.includes('*.' + d);
 }
 
 async function loadSite() {
@@ -190,12 +192,13 @@ async function toggleSiteBypass(btn) {
     const res = await send('toggleBypass', { host: siteHost });
     state.settings.bypassList = res.bypassList;
     renderSite();
+    const d = bypassHost(siteHost);
     const note = $('site-note');
     note.textContent = '';
     note.appendChild(el('span', {
       text: res.bypassed
-        ? `${siteHost} теперь идёт мимо прокси. `
-        : `${siteHost} снова через прокси. `
+        ? `${d} и поддомены теперь идут мимо прокси. `
+        : `${d} и поддомены снова через прокси. `
     }));
     if (siteTabId) {
       note.appendChild(el('button', {
