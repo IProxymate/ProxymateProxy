@@ -8,7 +8,12 @@ export const DEFAULT_SETTINGS = {
   /** полностью вырезать RTCPeerConnection на страницах */
   blockWebRTC: false,
   bypassList: ['localhost', '127.0.0.1', '<local>'],
-  autoCheckOnConnect: true
+  autoCheckOnConnect: true,
+  /**
+   * Блокировать весь трафик, если настройки прокси перехватило другое
+   * расширение или их сняли извне: иначе страницы молча пошли бы напрямую.
+   */
+  killSwitch: true
 };
 
 const DEFAULT_STATE = {

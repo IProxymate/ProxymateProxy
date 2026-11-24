@@ -8,6 +8,7 @@ let state = null;
 let siteHost = null;      // хост активной вкладки, если это обычный сайт
 let siteTabId = null;
 let filterText = '';
+let infoSeq = 0;          // номер последнего замера: устаревшие ответы не рисуем
 
 const FRESH_MS = 10 * 60 * 1000;
 const MODE_SHORT = { auto: '· авто', manual: '· вручную', off: '· без подмены' };
@@ -63,6 +64,10 @@ function renderHealth() {
     el('div', { class: 'note-sm', style: 'margin-top:0', text: ui.body }),
     h.code ? el('div', { class: 'note-sm mono', text: h.code }) : null,
     h.detail ? el('div', { class: 'note-sm', text: h.detail }) : null,
+    state.killSwitchOn
+      ? el('div', { class: 'note-sm', style: 'font-weight:600',
+          text: 'Весь трафик заблокирован, чтобы ваш IP не утёк. «Отключить прокси» снимет блокировку.' })
+      : null,
     el('div', { class: 'btn-row', style: 'margin-top:8px' }, [
       el('button', { class: 'sm primary', text: 'Переприменить', onclick: (e) => reapplyNow(e.target) }),
       el('button', { class: 'sm', text: 'Отключить прокси', onclick: () => disconnect() })
@@ -134,6 +139,7 @@ function renderInfo(geo) {
 
 /** Показывает кэш, если он актуален; иначе сам делает свежий замер. */
 async function loadInfo() {
+  const seq = ++infoSeq;
   if (checkIsCurrent(state.lastCheck)) {
     renderInfo(state.lastCheck);
     return;
@@ -141,8 +147,10 @@ async function loadInfo() {
   renderInfo(null);
   $('v-ip').textContent = 'проверка…';
   try {
-    renderInfo(await send('check'));
+    const geo = await send('check');
+    if (seq === infoSeq) renderInfo(geo);
   } catch (e) {
+    if (seq !== infoSeq) return;
     $('v-ip').textContent = '—';
     $('info-note').textContent = 'Не удалось определить IP: ' + e.message;
   }
@@ -287,13 +295,20 @@ async function connect(id) {
     failure = e.message;
   }
   await refresh();
-  await loadInfo();
   if (failure) $('warn').appendChild(notice(failure, true));
+  // Гео определяется в фоне — popup уже отзывчив, «Отключить» доступна сразу.
+  await loadInfo();
 }
 
 async function disconnect() {
-  await send('disconnect');
+  let failure = null;
+  try {
+    await send('disconnect');
+  } catch (e) {
+    failure = e.message;
+  }
   await refresh();
+  if (failure) $('warn').appendChild(notice('Не удалось отключить: ' + failure, true));
   await loadInfo();
 }
 
@@ -327,6 +342,12 @@ $('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
 $('leak').addEventListener('click', () => {
   chrome.tabs.create({ url: chrome.runtime.getURL('src/leaktest/leaktest.html') });
   window.close();
+});
+
+// Фоновое определение гео дописывает страну в профиль — перерисовываем список.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !state) return;
+  if (changes.profiles || changes.activeId || changes.settings) refresh().catch(() => {});
 });
 
 (async () => {

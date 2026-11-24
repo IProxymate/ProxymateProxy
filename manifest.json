@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Proxymate Proxy",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Свои прокси + подмена языка и часового пояса по стране прокси + проверка утечек WebRTC.",
   "minimum_chrome_version": "120",
   "permissions": [

@@ -79,13 +79,25 @@ async function fetchJson(url, timeoutMs) {
 }
 
 /**
+ * Общий бюджет на все провайдеры. Раньше было 8 с на каждого, то есть до 24 с
+ * ожидания с мёртвым прокси, и всё это время интерфейс показывал «проверка…».
+ */
+const DETECT_BUDGET_MS = 15000;
+
+/**
  * @returns {Promise<{ip,country,countryCode,city,timeZone,languages,provider,ts}>}
  */
 export async function detectGeo() {
   const errors = [];
+  const deadline = Date.now() + DETECT_BUDGET_MS;
   for (const p of PROVIDERS) {
+    const left = deadline - Date.now();
+    if (left < 1000) {
+      errors.push(`${p.name}: пропущен, время вышло`);
+      continue;
+    }
     try {
-      const data = await fetchJson(p.url, 8000);
+      const data = await fetchJson(p.url, Math.min(8000, left));
       const parsed = p.parse(data);
       if (!parsed || !parsed.ip) throw new Error('пустой ответ');
       const cc = parsed.countryCode ? String(parsed.countryCode).toUpperCase() : null;
@@ -104,7 +116,7 @@ export async function detectGeo() {
         ts: Date.now()
       };
     } catch (e) {
-      errors.push(`${p.name}: ${e.message}`);
+      errors.push(`${p.name}: ${e.name === 'AbortError' ? 'таймаут' : e.message}`);
     }
   }
   throw new Error('Не удалось определить IP. ' + errors.join('; '));

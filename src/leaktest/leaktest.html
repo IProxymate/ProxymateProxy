@@ -89,9 +89,12 @@
 
   <div class="card">
     <h2>4. Заголовок Accept-Language</h2>
-    <p class="muted" style="margin-top:0">Отражение реального запроса через httpbin. Требует сети.</p>
+    <p class="muted" style="margin-top:0">Отражение реального запроса через httpbin из выбранной вкладки — так, как его отправил бы сайт. Требует сети.</p>
     <div class="row" style="margin-bottom:8px"><button id="run-hdr">Проверить заголовок</button></div>
-    <table><tr><th>Accept-Language</th><td id="hdr" class="mono">—</td></tr></table>
+    <table>
+      <tr><th>Accept-Language</th><td id="hdr" class="mono">—</td></tr>
+      <tr><th>Откуда запрос</th><td id="hdr-src" class="muted">—</td></tr>
+    </table>
   </div>
 
   <div id="err"></div>

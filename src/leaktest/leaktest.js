@@ -284,17 +284,45 @@ async function runPage() {
 
 /* ------------------- 4. Accept-Language ------------------- */
 
+/**
+ * Выполняется в изолированном мире вкладки: запрос уходит как обычный
+ * запрос страницы, и правило подмены заголовка применяется к нему так же,
+ * как к запросам сайта. Со страницы расширения это не гарантировано.
+ */
+function fetchAcceptLanguage() {
+  return fetch('https://httpbin.org/headers', { cache: 'no-store', credentials: 'omit' })
+    .then((r) => r.json())
+    .then((d) => ({ value: d.headers['Accept-Language'] || d.headers['accept-language'] || null }))
+    .catch((e) => ({ error: String((e && e.message) || e) }));
+}
+
 async function runHeader() {
   $('hdr').textContent = 'проверка…';
-  try {
-    const res = await fetch('https://httpbin.org/headers', { cache: 'no-store', credentials: 'omit' });
-    const data = await res.json();
-    const v = data.headers['Accept-Language'] || data.headers['accept-language'];
-    $('hdr').textContent = v || '(не отправлен)';
-  } catch (e) {
-    $('hdr').textContent = '—';
-    fail('Accept-Language: ' + e.message);
+  $('hdr-src').textContent = '—';
+  let res = null;
+  const tab = await targetTab();
+  if (tab) {
+    try {
+      const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchAcceptLanguage });
+      res = r.result;
+      $('hdr-src').textContent = 'вкладка ' + new URL(tab.url).hostname;
+    } catch (e) {
+      res = null;
+    }
   }
+  if (!res || res.error) {
+    // Резерв: запрос со страницы расширения. Правило DNR к нему может не применяться.
+    const fromTab = res && res.error;
+    res = await fetchAcceptLanguage();
+    $('hdr-src').textContent = 'страница расширения — результат может не совпадать с тем, что видят сайты' +
+      (fromTab ? ` (из вкладки не вышло: ${fromTab})` : '');
+  }
+  if (res.error) {
+    $('hdr').textContent = '—';
+    fail('Accept-Language: ' + res.error);
+    return;
+  }
+  $('hdr').textContent = res.value || '(не отправлен)';
 }
 
 /* ------------------- запуск ------------------- */
@@ -302,10 +330,15 @@ async function runHeader() {
 $('run').addEventListener('click', async (e) => {
   $('err').textContent = '';
   e.target.disabled = true;
-  await runGeo();
-  await runRTC();
-  await runPage();
-  e.target.disabled = false;
+  try {
+    await runGeo();
+    await runRTC();
+    await runPage();
+  } catch (err) {
+    fail(err.message);
+  } finally {
+    e.target.disabled = false;
+  }
 });
 $('run-page').addEventListener('click', () => { $('err').textContent = ''; runPage(); });
 $('reload-page').addEventListener('click', (e) => {

@@ -54,13 +54,19 @@ function renderList() {
 }
 
 async function toggle(p) {
-  if (p.id === state.activeId) await send('disconnect');
-  else {
-    flash('Подключение и проверка IP…');
-    await send('connect', { id: p.id });
+  try {
+    if (p.id === state.activeId) {
+      await send('disconnect');
+      flash('Отключено');
+    } else {
+      flash('Подключение…');
+      await send('connect', { id: p.id });
+      flash('Подключено, страна выхода определяется в фоне');
+    }
+  } catch (e) {
+    flash(e.message, true);
   }
-  await refresh();
-  flash('Готово');
+  await refreshStatus();
 }
 
 /* ------------------------------ редактор ------------------------------ */
@@ -104,6 +110,7 @@ function syncEditorState() {
   const scheme = $('f-scheme').value;
   $('socks-note').hidden = !(scheme.startsWith('socks') && ($('f-user').value || $('f-pass').value));
   $('https-note').hidden = scheme !== 'https';
+  $('socks4-note').hidden = scheme !== 'socks4';
 }
 
 function closeEditor() {
@@ -217,7 +224,7 @@ async function saveProfile() {
   };
   await send('saveProfile', { profile });
   closeEditor();
-  await refresh();
+  await refreshStatus();
   flash('Профиль сохранён');
 }
 
@@ -225,7 +232,7 @@ async function deleteProfile() {
   if (!editing) return;
   await send('deleteProfile', { id: editing.id });
   closeEditor();
-  await refresh();
+  await refreshStatus();
   flash('Профиль удалён');
 }
 
@@ -288,6 +295,7 @@ function renderSettings() {
   $('s-al').checked = s.spoofAcceptLanguage;
   $('s-geo').checked = s.spoofGeolocation;
   $('s-auto').checked = s.autoCheckOnConnect;
+  $('s-kill').checked = s.killSwitch;
   $('s-blockrtc').checked = s.blockWebRTC;
   $('s-rtc').value = s.webrtcPolicy;
   bypass = (s.bypassList || []).slice();
@@ -301,6 +309,7 @@ async function saveSettings() {
     spoofAcceptLanguage: $('s-al').checked,
     spoofGeolocation: $('s-geo').checked,
     autoCheckOnConnect: $('s-auto').checked,
+    killSwitch: $('s-kill').checked,
     blockWebRTC: $('s-blockrtc').checked,
     webrtcPolicy: $('s-rtc').value,
     bypassList: bypass.slice()
@@ -352,7 +361,11 @@ async function renderDiag() {
   const rows = [
     ['Состояние туннеля', el('span', { class: 'badge ' + hCls, text: hText })],
     ['Настройка прокси', controlBadge(diag.proxyLevel)],
-    ['Применённый сервер', sp ? `${sp.scheme}://${sp.host}:${sp.port}` : 'нет (прямое соединение)'],
+    ['Применённый сервер', sp ? `${sp.scheme}://${sp.host}:${sp.port}`
+      : diag.proxyValue?.mode === 'pac_script' ? 'PAC-скрипт (идёт проверка профиля)' : 'нет (прямое соединение)'],
+    ['Блокировка трафика', diag.killSwitch
+      ? el('span', { class: 'badge bad', text: 'ВКЛЮЧЕНА — весь трафик заблокирован' })
+      : el('span', { class: 'badge', text: 'выключена' })],
     ['Политика WebRTC', controlBadge(diag.webrtcLevel)],
     ['Значение WebRTC', diag.webrtcValue || '—'],
     ['Accept-Language', diag.acceptLanguage],
@@ -491,17 +504,38 @@ async function checkUpdate(btn) {
 
 /* ------------------------------ загрузка ------------------------------ */
 
-async function refresh() {
-  state = await send('getState');
+function renderTop() {
   const active = state.profiles.find((p) => p.id === state.activeId);
   const top = $('top-status');
   top.textContent = active ? 'Подключено — ' + active.name : 'Прямое соединение';
   top.className = 'badge' + (active ? ' ok' : '');
+}
+
+/** Полная перерисовка, включая форму настроек — несохранённые правки в ней сбрасываются. */
+async function refresh() {
+  state = await send('getState');
+  renderTop();
   renderList();
   renderSettings();
   renderUpdate();
   await renderDiag();
 }
+
+/** Обновление статуса и списка без трогания формы настроек. */
+async function refreshStatus() {
+  state = await send('getState');
+  renderTop();
+  renderList();
+  await renderDiag();
+}
+
+let statusTimer = null;
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !state) return;
+  if (!changes.profiles && !changes.activeId) return;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => refreshStatus().catch(() => {}), 150);
+});
 
 /* ------------------------ экспорт и импорт ------------------------ */
 
@@ -621,7 +655,7 @@ $('import').addEventListener('click', async () => {
   if (!parsed.length) return flash('Ничего не распознано', true);
   await send('importProfiles', { profiles: parsed });
   $('bulk').value = '';
-  await refresh();
+  await refreshStatus();
   flash(`Добавлено: ${parsed.length}` + (bad.length ? `; пропущены строки: ${bad.join(', ')}` : ''));
 });
 

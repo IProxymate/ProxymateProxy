@@ -2,6 +2,7 @@ import { buildAcceptLanguage } from './countries.js';
 import { buildUserScriptCode, spoofMain } from './spoof.js';
 
 const DNR_LANG_RULE_ID = 1001;
+const KILL_RULE_ID = 1002;
 const USER_SCRIPT_ID = 'proxymate-spoof';
 
 const ALL_RESOURCE_TYPES = [
@@ -138,6 +139,34 @@ export async function applyAcceptLanguage(languages, bypassList) {
     removeRuleIds: [DNR_LANG_RULE_ID],
     addRules: rules
   });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Экстренная блокировка трафика                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Сессионное правило DNR, блокирующее все запросы. Работает, даже когда
+ * chrome.proxy контролирует другое расширение: DNR остаётся нашим.
+ * Сессионное — чтобы после перезапуска браузера не остаться без сети
+ * из-за забытого правила; при старте состояние проверяется заново.
+ */
+export async function setKillSwitch(on) {
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [KILL_RULE_ID],
+    addRules: on
+      ? [{ id: KILL_RULE_ID, priority: 100, action: { type: 'block' }, condition: { resourceTypes: ALL_RESOURCE_TYPES } }]
+      : []
+  });
+}
+
+export async function killSwitchActive() {
+  try {
+    const rules = await chrome.declarativeNetRequest.getSessionRules();
+    return rules.some((r) => r.id === KILL_RULE_ID);
+  } catch (e) {
+    return false;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -303,6 +332,7 @@ export async function readDiagnostics() {
       : 'правило не установлено';
   } catch (e) { out.acceptLanguage = 'ошибка: ' + e.message; }
 
+  out.killSwitch = await killSwitchActive();
   out.userScripts = userScriptsAvailable();
   if (out.userScripts) {
     try {

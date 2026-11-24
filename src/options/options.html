@@ -104,6 +104,11 @@
               <span class="muted">— отдаёт точку рядом с городом прокси; запрос разрешения у пользователя сохраняется</span></span>
           </label>
           <label class="check"><input type="checkbox" id="s-auto"><span>Определять IP и страну сразу после подключения</span></label>
+          <label class="check">
+            <input type="checkbox" id="s-kill">
+            <span>Блокировать трафик, если прокси перехвачен или снят
+              <span class="muted">— когда настройками завладело другое расширение, страницы не уйдут напрямую с вашим IP</span></span>
+          </label>
           <p class="muted" style="margin:4px 0 0">
             Эти галочки — общий рубильник. Отключить подмену для одного профиля
             можно в его настройках: «Подмена отпечатка» → «Не подменять ничего».
@@ -231,6 +236,11 @@
       <label class="field"><span>Логин</span><input type="text" id="f-user" autocomplete="off"></label>
       <label class="field"><span>Пароль</span><input type="password" id="f-pass" autocomplete="off"></label>
     </div>
+    <p class="notice" id="socks4-note" hidden>
+      SOCKS4 не умеет разрешать имена на стороне прокси: адреса сайтов
+      разрешает ваш DNS-провайдер, и он видит, куда вы ходите. Если прокси
+      поддерживает SOCKS5 — выберите его.
+    </p>
     <p class="notice" id="socks-note" hidden>
       SOCKS с логином и паролем Chrome через API расширений не поддерживает —
       авторизация будет проигнорирована.

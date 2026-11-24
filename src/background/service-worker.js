@@ -2,7 +2,8 @@ import { getState, setState, normalizeProfile, newProfileId, DEFAULT_SETTINGS } 
 import { detectGeo, probeGeo, PROBE_HOST } from '../lib/geo.js';
 import {
   applyAll, applyProbePac, injectFallback, userScriptsAvailable,
-  setBadge, clearProxy, readDiagnostics, isHostBypassed, bypassHost
+  setBadge, clearProxy, readDiagnostics, isHostBypassed, bypassHost,
+  setKillSwitch, killSwitchActive
 } from '../lib/apply.js';
 import { checkForUpdate } from '../lib/update.js';
 
@@ -15,14 +16,39 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === 'install') {
     await setState({ settings: DEFAULT_SETTINGS });
   }
-  await reapply(state);
+  await serial(() => reapply(state));
+  await checkControl();
   scheduleUpdateChecks();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  await reapply(await getState());
+  await serial(() => reapply());
+  await checkControl();
   scheduleUpdateChecks();
 });
+
+/**
+ * Кто сейчас управляет прокси — проверка по факту, а не по событию.
+ * Идёт через очередь: иначе она могла бы попасть между записью activeId
+ * и применением прокси в connect и поднять ложную тревогу «прокси сброшен».
+ */
+function checkControl() {
+  return serial(async () => {
+    const level = (await chrome.proxy.settings.get({})).levelOfControl;
+    await handleControlChange(level);
+  }).catch(() => { /* noop */ });
+}
+
+let controlTimer = null;
+/** Отложенная проверка: событие пришло, пока шла наша собственная запись. */
+function scheduleControlCheck() {
+  clearTimeout(controlTimer);
+  controlTimer = setTimeout(() => {
+    controlTimer = null;
+    if (applyDepth > 0) scheduleControlCheck();
+    else checkControl();
+  }, 800);
+}
 
 /* ------------------------------------------------------------------ */
 /*  Проверка обновлений на GitHub — раз в сутки + вручную из настроек  */
@@ -80,19 +106,100 @@ chrome.notifications.onClicked.addListener(async (id) => {
  */
 let applyDepth = 0;
 
-async function apply(profile, settings) {
+/**
+ * Номер последней записи в chrome.proxy. Проба сравнивает его до и после
+ * запроса: если за это время конфиг переписали, результат пробы недостоверен.
+ */
+let applyGen = 0;
+
+/** Наша собственная запись в настройки браузера. */
+async function ownWrite(fn) {
   applyDepth++;
+  applyGen++;
   try {
-    return await applyAll(profile, settings);
+    return await fn();
   } finally {
     setTimeout(() => { applyDepth = Math.max(0, applyDepth - 1); }, 700);
   }
+}
+
+function apply(profile, settings) {
+  return ownWrite(() => applyAll(profile, settings));
 }
 
 async function reapply(state) {
   const s = state || (await getState());
   const profile = s.activeId ? s.profiles.find((p) => p.id === s.activeId) : null;
   await apply(profile || null, s.settings);
+}
+
+/**
+ * Очередь операций, меняющих состояние и настройки браузера.
+ *
+ * applyAll — это несколько асинхронных шагов. Без очереди две операции
+ * (например, «отключить» и запоздавшее переприменение после определения
+ * гео) перемешивались, и прокси оставался включённым при activeId === null:
+ * popup показывал «прямое соединение», кнопка «Отключить» была неактивна,
+ * а трафик шёл в мёртвый прокси до перезапуска браузера.
+ *
+ * Долгие сетевые запросы (гео, проба) внутри очереди не выполняются —
+ * иначе «Отключить» ждал бы их таймаута.
+ */
+let opChain = Promise.resolve();
+
+/**
+ * Предохранитель: зависший вызов API не должен навсегда заблокировать
+ * очередь — иначе перестали бы работать и «Отключить», и всё остальное.
+ * Обычная операция занимает доли секунды.
+ */
+const SERIAL_WAIT_MS = 15000;
+
+function serial(fn) {
+  const prev = opChain;
+  const run = new Promise((resolve) => {
+    const t = setTimeout(() => {
+      console.warn('[proxymate] предыдущая операция зависла — продолжаю без неё');
+      resolve();
+    }, SERIAL_WAIT_MS);
+    prev.then(() => { clearTimeout(t); resolve(); });
+  }).then(() => fn());
+  opChain = run.catch(() => {});
+  return run;
+}
+
+/**
+ * Номер «подключения»: растёт при каждой смене активного профиля.
+ * Асинхронное продолжение (гео после connect, check) сверяет его, прежде чем
+ * что-то применять, и отказывается, если пользователь уже переключился.
+ */
+let epoch = 0;
+const STALE_MSG = 'Подключение сменилось во время проверки — повторите';
+
+/**
+ * Страховка от рассинхрона: настройки прокси должны соответствовать activeId.
+ * Если профиль не активен, а наш прокси в браузере стоит, — снимаем его.
+ * Если профиль активен, но остался PAC от прерванной пробы, — переприменяем.
+ * Вызывается при старте service worker'а и при каждом открытии popup/настроек.
+ */
+function reconcileProxy() {
+  return serial(async () => {
+    if (probe) return false;
+    const s = await getState();
+    const cur = await chrome.proxy.settings.get({});
+    if (cur.levelOfControl !== 'controlled_by_this_extension') return false;
+    const mode = cur.value && cur.value.mode;
+    if (!s.activeId && mode !== 'direct' && mode !== 'system') {
+      console.warn('[proxymate] прокси стоял без активного профиля — снимаю');
+      await apply(null, s.settings);
+      return true;
+    }
+    if (s.activeId && mode === 'pac_script') {
+      console.warn('[proxymate] остался PAC прерванной пробы — переприменяю');
+      await reapply(s);
+      return true;
+    }
+    return false;
+  }).catch((e) => { console.warn('[proxymate] сверка не удалась:', e); return false; });
 }
 
 /* ------------------------------------------------------------------ */
@@ -121,28 +228,40 @@ chrome.webRequest.onAuthRequired.addListener(
       return;
     }
     // Проба идёт через другой прокси — и логин/пароль у неё свои.
-    if (isProbeRequest(details.url)) {
-      callback(probe.username
-        ? { authCredentials: { username: probe.username, password: probe.password } }
-        : {});
-      return;
-    }
     const tries = (authAttempts.get(details.requestId) || 0) + 1;
     authAttempts.set(details.requestId, tries);
+
+    if (isProbeRequest(details.url)) {
+      // Неверный пароль у пробы иначе крутился бы до её таймаута.
+      if (tries > 2 || !probe.username) {
+        authAttempts.delete(details.requestId);
+        callback(tries > 2 ? { cancel: true } : {});
+        return;
+      }
+      callback({ authCredentials: { username: probe.username, password: probe.password } });
+      return;
+    }
     if (tries > 2) {
       authAttempts.delete(details.requestId);
       callback({ cancel: true });
       notifyAuthFailure();
       return;
     }
+
+    // asyncBlocking: если callback не вызвать, запрос висит вечно, а вместе
+    // с ним и соединения через прокси. Поэтому ответ гарантирован:
+    // ровно один раз и не позже чем через 5 секунд.
+    let answered = false;
+    const reply = (v) => { if (!answered) { answered = true; callback(v); } };
+    const guard = setTimeout(() => reply({ cancel: true }), 5000);
     getState().then((s) => {
       const profile = s.activeId ? s.profiles.find((p) => p.id === s.activeId) : null;
       if (profile && profile.username) {
-        callback({ authCredentials: { username: profile.username, password: profile.password } });
+        reply({ authCredentials: { username: profile.username, password: profile.password } });
       } else {
-        callback({});
+        reply({});
       }
-    }).catch(() => callback({}));
+    }).catch(() => reply({})).finally(() => clearTimeout(guard));
   },
   { urls: ['<all_urls>'] },
   ['asyncBlocking']
@@ -155,6 +274,35 @@ chrome.webRequest.onAuthRequired.addListener(
  */
 let successSinceConnect = 0;
 
+/**
+ * Активный профиль и список обхода в памяти: onCompleted срабатывает на
+ * каждый запрос, читать хранилище там слишком дорого.
+ */
+const live = { activeId: null, bypassList: [] };
+getState()
+  .then((s) => { live.activeId = s.activeId; live.bypassList = s.settings.bypassList || []; })
+  .catch(() => {});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.activeId) live.activeId = changes.activeId.newValue ?? null;
+  if (changes.settings) live.bypassList = (changes.settings.newValue && changes.settings.newValue.bypassList) || [];
+});
+
+/**
+ * Запрос шёл через туннель? Сайты из списка обхода и локальные адреса
+ * идут напрямую: их успех ничего не говорит о живости прокси, а раньше
+ * он обнулял серию отказов и тревога «прокси не отвечает» не поднималась.
+ */
+function viaTunnel(url) {
+  if (!live.activeId) return false;
+  let u;
+  try { u = new URL(url); } catch (e) { return false; }
+  if (!/^(https?|wss?):$/.test(u.protocol)) return false;
+  const h = u.hostname;
+  if (live.bypassList.includes('<local>') && (!h.includes('.') || h.startsWith('['))) return false;
+  return !isHostBypassed(h, live.bypassList);
+}
+
 // Service worker выгружается между запросами, поэтому факт «через прокси уже
 // что-то прошло» переживает перезапуск в session storage.
 chrome.storage.session.get('successCount')
@@ -164,6 +312,8 @@ chrome.storage.session.get('successCount')
 chrome.webRequest.onCompleted.addListener(
   (d) => {
     authAttempts.delete(d.requestId);
+    // Ответ из кэша и запросы мимо прокси о живости туннеля ничего не говорят.
+    if (d.fromCache || !viaTunnel(d.url)) return;
     if (d.statusCode >= 200 && d.statusCode < 400) {
       if (successSinceConnect === 0) {
         chrome.storage.session.remove('lastError');
@@ -227,7 +377,7 @@ chrome.webRequest.onErrorOccurred.addListener(
     recentErrors.length = Math.min(recentErrors.length, 12);
     chrome.storage.session.set({ recentErrors });
 
-    if (!proxyClass || forProbe) return;
+    if (!proxyClass || forProbe || !viaTunnel(d.url)) return;
 
     // Тревожим пользователя только если через прокси ещё вообще ничего
     // не прошло. Иначе это сломанный сайт, а не сломанный туннель.
@@ -252,8 +402,7 @@ function notifyAuthFailure() {
   if (now - lastAuthWarning < 10000) return;
   lastAuthWarning = now;
   chrome.storage.session.set({ lastError: 'Прокси отклонил логин/пароль' });
-  chrome.action.setBadgeText({ text: '!' });
-  chrome.action.setBadgeBackgroundColor({ color: '#dc2626' });
+  setHealth('failing', null, 'Прокси отклонил логин/пароль — проверьте учётные данные профиля.').catch(() => {});
 }
 
 /* ------------------------------------------------------------------ */
@@ -281,7 +430,7 @@ let failStreak = 0;
 let health = { state: 'ok', code: null, detail: null, ts: 0 };
 
 chrome.storage.session.get('health')
-  .then((v) => { if (v.health) health = v.health; })
+  .then((v) => { if (v.health && (v.health.ts || 0) > health.ts) health = v.health; })
   .catch(() => {});
 
 const HEALTH_TEXT = {
@@ -301,11 +450,28 @@ const HEALTH_TEXT = {
 
 let lastNotifyTs = 0;
 
+/**
+ * Включает блокировку трафика, когда прокси перехвачен или снят извне и
+ * профиль при этом активен; снимает её во всех остальных случаях.
+ * При «failing» блокировка не нужна: мёртвый прокси и так не пускает трафик.
+ */
+async function syncKillSwitch() {
+  try {
+    const s = await getState();
+    const on = !!(s.activeId && s.settings.killSwitch &&
+      (health.state === 'hijacked' || health.state === 'cleared'));
+    if (on !== (await killSwitchActive())) await setKillSwitch(on);
+  } catch (e) {
+    console.warn('[proxymate] не удалось переключить блокировку трафика:', e);
+  }
+}
+
 async function setHealth(state, code, detail) {
   if (health.state === state && health.code === code) return;
   const changed = health.state !== state;
   health = { state, code: code || null, detail: detail || null, ts: Date.now() };
   await chrome.storage.session.set({ health });
+  await syncKillSwitch();
   await refreshBadge();
 
   if (state === 'ok') {
@@ -353,10 +519,15 @@ async function refreshBadge() {
   await setBadge(p?.detected?.countryCode || 'ON');
 }
 
-/* Чужое вмешательство в настройки прокси ловим событием, без опроса. */
-chrome.proxy.settings.onChange.addListener((details) => {
-  if (applyDepth > 0) return;   // это наша собственная запись
-  handleControlChange(details.levelOfControl).catch(() => {});
+/*
+ * Чужое вмешательство в настройки прокси ловим событием, без опроса.
+ * Событие во время нашей записи раньше просто отбрасывалось — и перехват,
+ * случившийся в эти 700 мс, оставался незамеченным. Теперь оно откладывается
+ * до окончания записи и перепроверяется по фактическому состоянию.
+ */
+chrome.proxy.settings.onChange.addListener(() => {
+  if (applyDepth > 0) scheduleControlCheck();
+  else checkControl();
 });
 
 async function handleControlChange(level) {
@@ -400,17 +571,68 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  Определение гео выходного узла после подключения                   */
+/* ------------------------------------------------------------------ */
+
+/** Текущее фоновое определение гео: {epoch, promise}. */
+let geoTask = null;
+
+/**
+ * Сохраняет замер; для активного профиля в авто-режиме перенастраивает
+ * язык и зону. Вызывается только внутри serial().
+ */
+async function storeGeo(s, geo) {
+  const patch = { lastCheck: geo };
+  if (s.activeId) {
+    patch.profiles = s.profiles.map((p) => (p.id === s.activeId ? Object.assign({}, p, { detected: geo }) : p));
+  }
+  await setState(patch);
+  const active = patch.profiles && patch.profiles.find((p) => p.id === s.activeId);
+  if (active && (active.spoofMode || 'auto') === 'auto') await apply(active, s.settings);
+  else await refreshBadge();
+}
+
+function startGeoTask(myEpoch, id) {
+  const promise = (async () => {
+    let geo;
+    try {
+      geo = await detectGeo();
+    } catch (e) {
+      if (myEpoch === epoch) await chrome.storage.session.set({ lastError: e.message });
+      throw e;
+    }
+    return serial(async () => {
+      // Пользователь успел отключиться или выбрать другой профиль:
+      // применять устаревший результат нельзя — он бы снова включил прокси.
+      if (myEpoch !== epoch) throw new Error(STALE_MSG);
+      const s = await getState();
+      if (s.activeId !== id) throw new Error(STALE_MSG);
+      const marked = Object.assign(geo, { viaProxy: true, profileId: id });
+      await storeGeo(s, marked);
+      return marked;
+    });
+  })();
+  geoTask = { epoch: myEpoch, promise };
+  promise
+    .catch(() => {})
+    .finally(() => { if (geoTask && geoTask.promise === promise) geoTask = null; });
+  return promise;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Сообщения от popup / options / страницы теста                      */
 /* ------------------------------------------------------------------ */
 
 const handlers = {
   async getState() {
+    await reconcileProxy();
     const s = await getState();
     const session = await chrome.storage.session.get(['lastError']);
     const local = await chrome.storage.local.get('updateInfo');
     return Object.assign({}, s, {
       lastError: session.lastError || null,
       userScripts: userScriptsAvailable(),
+      killSwitchOn: await killSwitchActive(),
       health,
       updateInfo: local.updateInfo || null
     });
@@ -485,15 +707,21 @@ const handlers = {
       return { ok: false, message: 'SOCKS с логином и паролем Chrome не поддерживает — проверять нечего' };
     }
 
-    const s = await getState();
-    const current = s.activeId ? s.profiles.find((x) => x.id === s.activeId) : null;
     const started = Date.now();
-
     probe = { host: PROBE_HOST, username: p.username, password: p.password };
-    applyDepth++;   // чужим вмешательством это не считается
     try {
-      await applyProbePac(p, current || null, PROBE_HOST);
+      const gen = await serial(async () => {
+        const s = await getState();
+        const current = s.activeId ? s.profiles.find((x) => x.id === s.activeId) : null;
+        await ownWrite(() => applyProbePac(p, current || null, PROBE_HOST));
+        return applyGen;
+      });
       const geo = await probeGeo(12000);
+      // Пока шла проба, конфиг переписали (подключение, настройки) —
+      // запрос мог уйти не через проверяемый прокси.
+      if (applyGen !== gen) {
+        return { ok: false, ms: Date.now() - started, message: 'Проверку прервало изменение подключения — повторите' };
+      }
       return { ok: true, ms: Date.now() - started, geo };
     } catch (e) {
       const net = recentErrors.find((r) => r.kind === 'probe' && Date.now() - r.ts < 20000);
@@ -505,83 +733,83 @@ const handlers = {
       };
     } finally {
       probe = null;
-      // Восстанавливаем прежнее состояние при любом исходе.
-      try { await apply(current || null, s.settings); } catch (err) { /* см. диагностику */ }
-      setTimeout(() => { applyDepth = Math.max(0, applyDepth - 1); }, 700);
+      // Восстанавливаем состояние из свежего хранилища, а не из снимка на
+      // момент старта: пользователь мог за это время подключиться или отключиться.
+      await serial(() => reapply()).catch(() => { /* см. диагностику */ });
     }
   },
 
+  /**
+   * Подключение отвечает сразу после применения прокси. Определение гео
+   * идёт в фоне: с медленным или мёртвым прокси оно занимает до 15 секунд,
+   * и всё это время popup был бы заблокирован.
+   */
   async connect({ id }) {
-    const s = await getState();
-    const profile = s.profiles.find((p) => p.id === id);
-    if (!profile) throw new Error('Профиль не найден');
+    const res = await serial(async () => {
+      const s = await getState();
+      const profile = s.profiles.find((p) => p.id === id);
+      if (!profile) throw new Error('Профиль не найден');
 
-    await chrome.storage.session.remove(['lastError', 'applyErrors', 'successCount']);
-    recentErrors.length = 0;
-    successSinceConnect = 0;
-    failStreak = 0;
-    await setHealth('ok');
-    await setState({ activeId: id });
-    const applied = await apply(profile, s.settings);
-    if (applied.errors.length) {
-      await chrome.storage.session.set({ applyErrors: applied.errors, lastError: applied.errors[0] });
-    }
+      epoch++;
+      await chrome.storage.session.remove(['lastError', 'applyErrors', 'successCount']);
+      recentErrors.length = 0;
+      successSinceConnect = 0;
+      failStreak = 0;
+      await setHealth('ok');
+      await setState({ activeId: id });
+      const applied = await apply(profile, s.settings);
+      if (applied.errors.length) {
+        await chrome.storage.session.set({ applyErrors: applied.errors, lastError: applied.errors[0] });
+      }
+      return { profile, settings: s.settings, myEpoch: epoch, applyErrors: applied.errors };
+    });
 
-    if (!s.settings.autoCheckOnConnect) return { ok: true, profile, applyErrors: applied.errors };
-
-    // Определяем гео уже через прокси и, если профиль в авто-режиме,
-    // перенастраиваем язык/таймзону под выходной узел.
-    try {
-      const geo = await detectGeo();
-      const updated = Object.assign({}, profile, { detected: geo });
-      const profiles = s.profiles.map((p) => (p.id === id ? updated : p));
-      await setState({ profiles, lastCheck: geo });
-      if ((profile.spoofMode || 'auto') === 'auto') await apply(updated, s.settings);
-      return { ok: true, profile: updated, geo };
-    } catch (e) {
-      await chrome.storage.session.set({ lastError: e.message });
-      return { ok: true, profile, geoError: e.message };
-    }
+    if (res.settings.autoCheckOnConnect) startGeoTask(res.myEpoch, id);
+    return { ok: true, profile: res.profile, applyErrors: res.applyErrors, geoPending: !!res.settings.autoCheckOnConnect };
   },
 
   async disconnect() {
-    await setState({ activeId: null });
-    await apply(null, (await getState()).settings);
-    recentErrors.length = 0;
-    failStreak = 0;
-    await setHealth('ok');
-    await chrome.storage.session.remove(['lastError', 'applyErrors', 'recentErrors', 'successCount']);
+    await serial(async () => {
+      epoch++;
+      await setState({ activeId: null });
+      await apply(null, (await getState()).settings);
+      recentErrors.length = 0;
+      failStreak = 0;
+      await setHealth('ok');
+      await chrome.storage.session.remove(['lastError', 'applyErrors', 'recentErrors', 'successCount']);
+    });
     return { ok: true };
   },
 
   /** Ручное переприменение настроек — например, чтобы вернуть себе контроль. */
   async reapplyNow() {
-    failStreak = 0;
-    await reapply();
-    const level = (await chrome.proxy.settings.get({})).levelOfControl;
-    await handleControlChange(level);
-    return { ok: true, levelOfControl: level, health };
+    return serial(async () => {
+      failStreak = 0;
+      await reapply();
+      const level = (await chrome.proxy.settings.get({})).levelOfControl;
+      await handleControlChange(level);
+      return { ok: true, levelOfControl: level, health };
+    });
   },
 
   async check() {
     // Гео-сервис и проба используют один хост — параллельно они бы мешали.
     if (probe) throw new Error('Идёт проверка прокси, повторите через несколько секунд');
-    const s = await getState();
-    // Помечаем, в каком режиме сделан замер: иначе при отключённом прокси
-    // popup показывал бы старые данные выходного узла как «текущие».
-    const geo = Object.assign(await detectGeo(), {
-      viaProxy: !!s.activeId,
-      profileId: s.activeId || null
+    const myEpoch = epoch;
+    // Сразу после подключения гео уже определяется в фоне — ждём его,
+    // а не запускаем второй такой же запрос.
+    if (geoTask && geoTask.epoch === myEpoch) return geoTask.promise;
+
+    const geo = await detectGeo();
+    return serial(async () => {
+      if (myEpoch !== epoch) throw new Error(STALE_MSG);
+      const s = await getState();
+      // Помечаем, в каком режиме сделан замер: иначе при отключённом прокси
+      // popup показывал бы старые данные выходного узла как «текущие».
+      const marked = Object.assign(geo, { viaProxy: !!s.activeId, profileId: s.activeId || null });
+      await storeGeo(s, marked);
+      return marked;
     });
-    const patch = { lastCheck: geo };
-    if (s.activeId) {
-      patch.profiles = s.profiles.map((p) => (p.id === s.activeId ? Object.assign({}, p, { detected: geo }) : p));
-      const active = patch.profiles.find((p) => p.id === s.activeId);
-      if (active && (active.spoofMode || 'auto') === 'auto') await apply(active, s.settings);
-      else await setBadge(geo.countryCode || 'ON');
-    }
-    await setState(patch);
-    return geo;
   },
 
   /** Добавить/убрать сайт из списка обхода прямо из popup. */
@@ -646,6 +874,8 @@ const handlers = {
     if (!incoming.length) throw new Error('В файле нет ни одного валидного профиля');
 
     if (replace) {
+      epoch++;
+      await setState({ activeId: null });
       await apply(null, s.settings);
       const settings = data.settings
         ? Object.assign({}, DEFAULT_SETTINGS, data.settings)
@@ -682,6 +912,7 @@ const handlers = {
     // Сначала снимаем активность, потом трогаем настройки: иначе onChange
     // увидит сброшенный прокси при ещё живом activeId и решит, что нас сбросили.
     if (s.activeId === id) {
+      epoch++;
       patch.activeId = null;
       await setState({ activeId: null });
       await apply(null, s.settings);
@@ -698,28 +929,50 @@ const handlers = {
     await setState({ settings: merged });
     const profile = s.activeId ? s.profiles.find((p) => p.id === s.activeId) : null;
     await apply(profile || null, merged);
+    await syncKillSwitch();
     return { ok: true, settings: merged };
   },
 
   async resetAll() {
+    epoch++;
     await setState({ activeId: null });
-    await clearProxy();
+    await ownWrite(() => clearProxy());
     await apply(null, DEFAULT_SETTINGS);
     failStreak = 0;
     await setHealth('ok');
+    await setKillSwitch(false).catch(() => {});
     await setBadge(null);
     return { ok: true };
   }
 };
 
+/**
+ * Обработчики, которые читают-изменяют-применяют состояние целиком.
+ * Их выполняем строго по очереди. connect, disconnect, check, testProfile
+ * и reapplyNow сами берут очередь только на нужные участки.
+ */
+const SERIAL_HANDLERS = new Set([
+  'toggleBypass', 'saveProfile', 'importData', 'importProfiles',
+  'deleteProfile', 'saveSettings', 'resetAll'
+]);
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  const handler = handlers[msg && msg.type];
+  const type = msg && msg.type;
+  const handler = handlers[type];
   if (!handler) {
-    sendResponse({ error: 'Неизвестная команда: ' + (msg && msg.type) });
+    sendResponse({ error: 'Неизвестная команда: ' + type });
     return false;
   }
-  Promise.resolve(handler(msg.payload || {}))
+  const payload = msg.payload || {};
+  const run = SERIAL_HANDLERS.has(type)
+    ? serial(() => handler(payload))
+    : Promise.resolve().then(() => handler(payload));
+  run
     .then((data) => sendResponse({ data }))
     .catch((e) => sendResponse({ error: e.message || String(e) }));
   return true; // асинхронный ответ
 });
+
+// Service worker мог быть выгружен посреди пробы или в рассинхроне —
+// при каждом его старте сверяем настройки прокси с activeId.
+reconcileProxy();
